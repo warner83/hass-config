@@ -56,6 +56,9 @@ class HNAPClient:
             'Login', Action='request', Username=self.username,
             LoginPassword='', Captcha='')
 
+        if not resp:
+            raise AuthenticationError('Initial error')
+
         challenge = resp['Challenge']
         public_key = resp['PublicKey']
         self._cookie = resp['Cookie']
@@ -103,7 +106,8 @@ class HNAPClient:
         self._update_nauth_token(method)
         try:
             result = yield from self.soap().call(method, **kwargs)
-            if 'ERROR' in result:
+            if result is None or 'ERROR' in result:
+            #if 'ERROR' in results:
                 self._bad_response()
         except:
             self._bad_response()
@@ -112,6 +116,10 @@ class HNAPClient:
     def _bad_response(self):
         _LOGGER.error('Got an error, resetting private key')
         self._private_key = None
+        self._cookie = None
+        self._auth_token = None
+        self._timestamp = None
+        self.actions = None
         raise Exception('got error response from device')
 
     def _update_nauth_token(self, action):
@@ -156,7 +164,12 @@ class MotionSensor:
         if 'GetLatestDetection' in self._soap_actions:
             resp = yield from self.client.call(
                 'GetLatestDetection', ModuleID=self.module_id)
-            detect_time = resp['LatestDetectTime']
+            _LOGGER.info(str(resp))
+            _LOGGER.info("received response")       
+            if resp['GetLatestDetectionResult'] == 'ERROR':
+                self.client._bad_response()
+            else:
+                detect_time = resp['LatestDetectTime']
         else:
             resp = yield from self.client.call(
                 'GetMotionDetectorLogs', ModuleID=self.module_id, MaxCount=1,
@@ -174,6 +187,14 @@ class MotionSensor:
             'GetSystemLogs', MaxCount=100,
             PageOffset=1, StartTime=0, EndTime='All')
         print(resp)
+
+    @asyncio.coroutine
+    def reboot(self):
+        resp = yield from self.client.call(
+            'Reboot', MaxCount=1,
+            PageOffset=1, StartTime=0, EndTime='All')
+        print(resp)
+   
 
     @asyncio.coroutine
     def _cache_soap_actions(self):
@@ -221,8 +242,32 @@ class NanoSOAPClient:
         headers = self.headers.copy()
         headers['SOAPAction'] = '"{0}{1}"'.format(self.action, method)
 
-        resp = yield from self.session.post(
-            self.address, data=xml, headers=headers, timeout=10)
+        attempt = 10
+        backoff_interval = 1
+        resp = None
+        successful = False
+        while attempt > 0:
+
+            try:
+
+                resp = yield from self.session.post(
+                    self.address, data=xml, headers=headers, timeout=10)
+                
+                attempt = 0
+
+                successful = True
+
+            except (aiohttp.ClientError,
+                    aiohttp.ClientOSError,
+                    asyncio.TimeoutError) as exc:
+                attempt -= 1
+                backoff_interval = backoff_interval * 3
+                yield from asyncio.sleep(backoff_interval)
+
+        if successful is False:
+            print("max retries reached") 
+            return None
+
         text = yield from resp.text()
         parsed = xmltodict.parse(text)
         if 'soap:Envelope' not in parsed:
@@ -257,6 +302,9 @@ if __name__ == '__main__':
             print('\n'.join(client.actions))
         elif cmd == 'log':
             log = yield from motion.system_log()
+        elif cmd == 'reboot':
+            res = yield from motion.reboot()
+            print(str(res))
 
         session.close()
 
