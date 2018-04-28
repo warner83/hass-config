@@ -70,6 +70,7 @@ class DlinkMotionSensor(BinarySensorDevice):
         self._timeout = timeout
         self._motion_sensor = motion_sensor
         self._on = False
+        self._times = 0
 
     @property
     def name(self):
@@ -90,7 +91,14 @@ class DlinkMotionSensor(BinarySensorDevice):
     def async_update(self):
         """Get the latest data and updates the states."""
         try:
-            last_trigger = yield from self._motion_sensor.latest_trigger()
+            if self._times > 6000:
+                self._times = 0
+                yield from self._motion_sensor.reboot()
+                last_trigger = None
+            else:
+
+                self._times = self._times + 1
+                last_trigger = yield from self._motion_sensor.latest_trigger()
         except Exception:
             last_trigger = None
             _LOGGER.exception('failed to update motion sensor')
